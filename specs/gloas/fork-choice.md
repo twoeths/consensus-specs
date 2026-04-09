@@ -45,7 +45,6 @@
   - [Modified `update_checkpoints`](#modified-update_checkpoints)
   - [Modified `update_unrealized_checkpoints`](#modified-update_unrealized_checkpoints)
   - [Modified `compute_pulled_up_tip`](#modified-compute_pulled_up_tip)
-  - [Modified `on_tick_per_slot`](#modified-on_tick_per_slot)
 - [Handlers](#handlers)
   - [Modified `on_block`](#modified-on_block)
   - [Modified `on_attestation`](#modified-on_attestation)
@@ -869,30 +868,6 @@ def compute_pulled_up_tip(store: Store, block_root: Root) -> None:
     current_epoch = get_current_store_epoch(store)
     if block_epoch < current_epoch:
         update_checkpoints(store, unrealized_justified, unrealized_finalized)
-```
-
-### Modified `on_tick_per_slot`
-
-```python
-def on_tick_per_slot(store: Store, time: uint64) -> None:
-    previous_slot = get_current_slot(store)
-
-    # Update store time
-    store.time = time
-
-    current_slot = get_current_slot(store)
-
-    # If this is a new slot, reset store.proposer_boost_root
-    if current_slot > previous_slot:
-        store.proposer_boost_root = Root()
-
-    # If a new epoch, pull-up justification and finalization from previous epoch
-    if current_slot > previous_slot and compute_slots_since_epoch_start(current_slot) == 0:
-        update_checkpoints(
-            store,
-            store.unrealized_justified_checkpoint,
-            store.unrealized_finalized_checkpoint,
-        )
 ```
 
 ## Handlers
