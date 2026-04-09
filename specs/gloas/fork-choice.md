@@ -39,6 +39,11 @@
   - [Modified `get_sync_message_due_ms`](#modified-get_sync_message_due_ms)
   - [Modified `get_contribution_due_ms`](#modified-get_contribution_due_ms)
   - [New `get_payload_attestation_due_ms`](#new-get_payload_attestation_due_ms)
+  - [New `compute_checkpoint_payload_status`](#new-compute_checkpoint_payload_status)
+  - [Modified `update_checkpoints`](#modified-update_checkpoints)
+  - [Modified `update_unrealized_checkpoints`](#modified-update_unrealized_checkpoints)
+  - [Modified `compute_pulled_up_tip`](#modified-compute_pulled_up_tip)
+  - [Modified `on_tick_per_slot`](#modified-on_tick_per_slot)
 - [Handlers](#handlers)
   - [Modified `on_block`](#modified-on_block)
   - [Modified `is_data_available`](#modified-is_data_available)
@@ -135,6 +140,11 @@ class Store(object):
     finalized_checkpoint: Checkpoint
     unrealized_justified_checkpoint: Checkpoint
     unrealized_finalized_checkpoint: Checkpoint
+    # [New in Gloas]
+    justified_checkpoint_payload_status: PayloadStatus
+    finalized_checkpoint_payload_status: PayloadStatus
+    unrealized_justified_checkpoint_payload_status: PayloadStatus
+    unrealized_finalized_checkpoint_payload_status: PayloadStatus
     proposer_boost_root: Root
     equivocating_indices: Set[ValidatorIndex]
     blocks: Dict[Root, BeaconBlock] = field(default_factory=dict)
@@ -165,6 +175,8 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
     justified_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
     finalized_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
     proposer_boost_root = Root()
+    # [New in Gloas]
+    anchor_checkpoint_payload_status = compute_checkpoint_payload_status(anchor_state, anchor_epoch)
     return Store(
         time=uint64(anchor_state.genesis_time + SLOT_DURATION_MS * anchor_state.slot // 1000),
         genesis_time=anchor_state.genesis_time,
@@ -172,6 +184,11 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         finalized_checkpoint=finalized_checkpoint,
         unrealized_justified_checkpoint=justified_checkpoint,
         unrealized_finalized_checkpoint=finalized_checkpoint,
+        # [New in Gloas]
+        justified_checkpoint_payload_status=anchor_checkpoint_payload_status,
+        finalized_checkpoint_payload_status=anchor_checkpoint_payload_status,
+        unrealized_justified_checkpoint_payload_status=anchor_checkpoint_payload_status,
+        unrealized_finalized_checkpoint_payload_status=anchor_checkpoint_payload_status,
         proposer_boost_root=proposer_boost_root,
         equivocating_indices=set(),
         blocks={anchor_root: copy(anchor_block)},
@@ -722,6 +739,135 @@ def get_payload_attestation_due_ms(epoch: Epoch) -> uint64:
     return get_slot_component_duration_ms(PAYLOAD_ATTESTATION_DUE_BPS)
 ```
 
+### New `compute_checkpoint_payload_status`
+
+```python
+def compute_checkpoint_payload_status(state: BeaconState, epoch: Epoch) -> PayloadStatus:
+    """
+    Compute the payload status for the checkpoint at the given epoch.
+    For skipped-slot checkpoints, the payload status depends on whether
+    the actual checkpoint block had an available execution payload.
+    For regular checkpoints, the status is always EMPTY.
+    """
+    if is_skipped_slot_checkpoint(state, epoch):
+        block_slot = get_checkpoint_block_slot(state, epoch)
+        if state.execution_payload_availability[block_slot % SLOTS_PER_HISTORICAL_ROOT]:
+            return PAYLOAD_STATUS_FULL
+        else:
+            return PAYLOAD_STATUS_EMPTY
+    return PAYLOAD_STATUS_EMPTY
+```
+
+### Modified `update_checkpoints`
+
+```python
+def update_checkpoints(
+    store: Store,
+    justified_checkpoint: Checkpoint,
+    finalized_checkpoint: Checkpoint,
+    # [New in Gloas]
+    justified_checkpoint_payload_status: PayloadStatus,
+    finalized_checkpoint_payload_status: PayloadStatus,
+) -> None:
+    """
+    Update checkpoints in store if necessary
+    """
+    # Update justified checkpoint
+    if justified_checkpoint.epoch > store.justified_checkpoint.epoch:
+        store.justified_checkpoint = justified_checkpoint
+        store.justified_checkpoint_payload_status = justified_checkpoint_payload_status
+
+    # Update finalized checkpoint
+    if finalized_checkpoint.epoch > store.finalized_checkpoint.epoch:
+        store.finalized_checkpoint = finalized_checkpoint
+        store.finalized_checkpoint_payload_status = finalized_checkpoint_payload_status
+```
+
+### Modified `update_unrealized_checkpoints`
+
+```python
+def update_unrealized_checkpoints(
+    store: Store,
+    unrealized_justified_checkpoint: Checkpoint,
+    unrealized_finalized_checkpoint: Checkpoint,
+    # [New in Gloas]
+    unrealized_justified_checkpoint_payload_status: PayloadStatus,
+    unrealized_finalized_checkpoint_payload_status: PayloadStatus,
+) -> None:
+    """
+    Update unrealized checkpoints in store if necessary
+    """
+    # Update unrealized justified checkpoint
+    if unrealized_justified_checkpoint.epoch > store.unrealized_justified_checkpoint.epoch:
+        store.unrealized_justified_checkpoint = unrealized_justified_checkpoint
+        store.unrealized_justified_checkpoint_payload_status = unrealized_justified_checkpoint_payload_status
+
+    # Update unrealized finalized checkpoint
+    if unrealized_finalized_checkpoint.epoch > store.unrealized_finalized_checkpoint.epoch:
+        store.unrealized_finalized_checkpoint = unrealized_finalized_checkpoint
+        store.unrealized_finalized_checkpoint_payload_status = unrealized_finalized_checkpoint_payload_status
+```
+
+### Modified `compute_pulled_up_tip`
+
+```python
+def compute_pulled_up_tip(store: Store, block_root: Root) -> None:
+    state = store.block_states[block_root].copy()
+    # Pull up the post-state of the block to the next epoch boundary
+    process_justification_and_finalization(state)
+
+    store.unrealized_justifications[block_root] = state.current_justified_checkpoint
+
+    # [New in Gloas] Compute payload statuses for checkpoints
+    unrealized_justified_payload_status = compute_checkpoint_payload_status(
+        state, state.current_justified_checkpoint.epoch
+    )
+    unrealized_finalized_payload_status = compute_checkpoint_payload_status(
+        state, state.finalized_checkpoint.epoch
+    )
+
+    update_unrealized_checkpoints(
+        store, state.current_justified_checkpoint, state.finalized_checkpoint,
+        unrealized_justified_payload_status, unrealized_finalized_payload_status,
+    )
+
+    # If the block is from a prior epoch, apply the realized values
+    block_epoch = compute_epoch_at_slot(store.blocks[block_root].slot)
+    current_epoch = get_current_store_epoch(store)
+    if block_epoch < current_epoch:
+        update_checkpoints(
+            store, state.current_justified_checkpoint, state.finalized_checkpoint,
+            unrealized_justified_payload_status, unrealized_finalized_payload_status,
+        )
+```
+
+### Modified `on_tick_per_slot`
+
+```python
+def on_tick_per_slot(store: Store, time: uint64) -> None:
+    previous_slot = get_current_slot(store)
+
+    # Update store time
+    store.time = time
+
+    current_slot = get_current_slot(store)
+
+    # If this is a new slot, reset store.proposer_boost_root
+    if current_slot > previous_slot:
+        store.proposer_boost_root = Root()
+
+    # If a new epoch, pull-up justification and finalization from previous epoch
+    if current_slot > previous_slot and compute_slots_since_epoch_start(current_slot) == 0:
+        # [New in Gloas] Promote unrealized payload statuses to realized
+        update_checkpoints(
+            store,
+            store.unrealized_justified_checkpoint,
+            store.unrealized_finalized_checkpoint,
+            store.unrealized_justified_checkpoint_payload_status,
+            store.unrealized_finalized_checkpoint_payload_status,
+        )
+```
+
 ## Handlers
 
 ### Modified `on_block`
@@ -786,7 +932,13 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
     update_proposer_boost_root(store, block_root)
 
     # Update checkpoints in store if necessary
-    update_checkpoints(store, state.current_justified_checkpoint, state.finalized_checkpoint)
+    update_checkpoints(
+        store,
+        state.current_justified_checkpoint,
+        state.finalized_checkpoint,
+        compute_checkpoint_payload_status(state, state.current_justified_checkpoint.epoch),
+        compute_checkpoint_payload_status(state, state.finalized_checkpoint.epoch),
+    )
 
     # Eagerly compute unrealized justification and finality.
     compute_pulled_up_tip(store, block_root)
