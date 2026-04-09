@@ -479,7 +479,7 @@ def get_weight(
     if node.payload_status == PAYLOAD_STATUS_PENDING or store.blocks[
         node.root
     ].slot + 1 != get_current_slot(store):
-        state = store.checkpoint_states[store.justified_checkpoint]
+        state = get_justified_state(store)
         attestation_score = get_attestation_score(store, node, state)
         if not should_apply_proposer_boost(store):
             # Return only attestation score if
@@ -665,7 +665,7 @@ vice-versa.
 ```python
 def is_head_weak(store: Store, head_root: Root) -> bool:
     # Calculate weight threshold for weak head
-    justified_state = store.checkpoint_states[store.justified_checkpoint]
+    justified_state = get_justified_state(store)
     reorg_threshold = calculate_committee_fraction(justified_state, REORG_HEAD_WEIGHT_THRESHOLD)
 
     # Compute head weight including equivocations
@@ -691,7 +691,7 @@ def is_head_weak(store: Store, head_root: Root) -> bool:
 
 ```python
 def is_parent_strong(store: Store, root: Root) -> bool:
-    justified_state = store.checkpoint_states[store.justified_checkpoint]
+    justified_state = get_justified_state(store)
     parent_threshold = calculate_committee_fraction(justified_state, REORG_PARENT_WEIGHT_THRESHOLD)
     block = store.blocks[root]
     parent_payload_status = get_parent_payload_status(store, block)
@@ -761,6 +761,20 @@ def store_target_checkpoint_state(store: Store, target: GloasCheckpoint) -> None
         if base_state.slot < compute_start_slot_at_epoch(target.epoch):
             process_slots(base_state, compute_start_slot_at_epoch(target.epoch))
         store.checkpoint_states[target] = base_state
+```
+
+### New `get_justified_state`
+
+```python
+def get_justified_state(store: Store) -> BeaconState:
+    return store.checkpoint_states[store.justified_checkpoint]
+```
+
+### New `get_finalized_state`
+
+```python
+def get_finalized_state(store: Store) -> BeaconState:
+    return store.checkpoint_states[store.finalized_checkpoint]
 ```
 
 ### New `compute_checkpoint_payload_status`
@@ -928,6 +942,7 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
 
     # Check the block is valid and compute the post-state
     block_root = hash_tree_root(block)
+    # [New in Gloas] Implementation should populate checkpoint_states if this goes through any epoch transitions
     state_transition(state, signed_block, True)
 
     # Add new block to the store
