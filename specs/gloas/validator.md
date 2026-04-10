@@ -141,7 +141,7 @@ logic as bit 1 applies:
 
 The final value of `data.index` is computed as:
 
-```python
+```
 data.index = head_payload_bit | (target_payload_bit << 1) | (source_payload_bit << 2)
 ```
 
