@@ -43,6 +43,8 @@
     - [New `is_active_builder`](#new-is_active_builder)
     - [New `is_builder_withdrawal_credential`](#new-is_builder_withdrawal_credential)
     - [New `is_attestation_same_slot`](#new-is_attestation_same_slot)
+    - [New `is_skipped_slot_checkpoint`](#new-is_skipped_slot_checkpoint)
+    - [New `get_checkpoint_block_slot`](#new-get_checkpoint_block_slot)
     - [New `is_valid_indexed_payload_attestation`](#new-is_valid_indexed_payload_attestation)
     - [New `is_parent_block_full`](#new-is_parent_block_full)
     - [New `is_pending_validator`](#new-is_pending_validator)
@@ -471,7 +473,9 @@ def is_skipped_slot_checkpoint(state: BeaconState, epoch: Epoch) -> bool:
     start_slot = compute_start_slot_at_epoch(epoch)
     if start_slot == 0:
         return False
-    return get_block_root_at_slot(state, start_slot) == get_block_root_at_slot(state, Slot(start_slot - 1))
+    return get_block_root_at_slot(state, start_slot) == get_block_root_at_slot(
+        state, Slot(start_slot - 1)
+    )
 ```
 
 #### New `get_checkpoint_block_slot`
@@ -709,11 +713,11 @@ def get_next_sync_committee_indices(state: BeaconState) -> Sequence[ValidatorInd
 
 *Note*: The function `get_attestation_participation_flag_indices` is modified to
 include payload matching constraints for head, target, and source checkpoints.
-The `data.index` field encodes three payload status bits:
-bit 0 for head, bit 1 for target checkpoint, and bit 2 for source checkpoint.
-For regular (non-skipped) checkpoints, the corresponding bit must be 0.
-For skipped-slot checkpoints, the bit reflects the payload availability of the
-checkpoint root's block.
+The `data.index` field encodes three payload status bits: bit 0 for head, bit 1
+for target checkpoint, and bit 2 for source checkpoint. For regular
+(non-skipped) checkpoints, the corresponding bit must be 0. For skipped-slot
+checkpoints, the bit reflects the payload availability of the checkpoint root's
+block.
 
 ```python
 def get_attestation_participation_flag_indices(
@@ -722,7 +726,8 @@ def get_attestation_participation_flag_indices(
     """
     Return the flag indices that are satisfied by an attestation.
     """
-    # [New in Gloas] Extract payload status bits from data.index
+    # [New in Gloas]
+    # Extract payload status bits from data.index
     head_payload_bit = data.index & 1
     target_payload_bit = (data.index >> 1) & 1
     source_payload_bit = (data.index >> 2) & 1
@@ -734,10 +739,13 @@ def get_attestation_participation_flag_indices(
         justified_checkpoint = state.previous_justified_checkpoint
     source_checkpoint_matches = data.source == justified_checkpoint
 
-    # [New in Gloas] Source checkpoint payload matching
+    # [New in Gloas]
+    # Source checkpoint payload matching
     if is_skipped_slot_checkpoint(state, data.source.epoch):
         source_block_slot = get_checkpoint_block_slot(state, data.source.epoch)
-        has_source_payload = state.execution_payload_availability[source_block_slot % SLOTS_PER_HISTORICAL_ROOT]
+        has_source_payload = state.execution_payload_availability[
+            source_block_slot % SLOTS_PER_HISTORICAL_ROOT
+        ]
         source_payload_matches = source_payload_bit == has_source_payload
     else:
         source_payload_matches = source_payload_bit == 0
@@ -748,17 +756,21 @@ def get_attestation_participation_flag_indices(
     target_root = get_block_root(state, data.target.epoch)
     target_root_matches = data.target.root == target_root
 
-    # [New in Gloas] Target checkpoint payload matching
+    # [New in Gloas]
+    # Target checkpoint payload matching
     if is_skipped_slot_checkpoint(state, data.target.epoch):
         target_block_slot = get_checkpoint_block_slot(state, data.target.epoch)
-        has_target_payload = state.execution_payload_availability[target_block_slot % SLOTS_PER_HISTORICAL_ROOT]
+        has_target_payload = state.execution_payload_availability[
+            target_block_slot % SLOTS_PER_HISTORICAL_ROOT
+        ]
         target_payload_matches = target_payload_bit == has_target_payload
     else:
         target_payload_matches = target_payload_bit == 0
 
     is_matching_target = is_matching_source and target_root_matches and target_payload_matches
 
-    # [Modified in Gloas:EIP7732] Head payload matching
+    # [Modified in Gloas:EIP7732]
+    # Head payload matching
     if is_attestation_same_slot(state, data):
         assert head_payload_bit == 0
         head_payload_matches = True

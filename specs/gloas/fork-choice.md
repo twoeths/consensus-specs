@@ -41,6 +41,8 @@
   - [Modified `get_contribution_due_ms`](#modified-get_contribution_due_ms)
   - [New `get_payload_attestation_due_ms`](#new-get_payload_attestation_due_ms)
   - [Modified `store_target_checkpoint_state`](#modified-store_target_checkpoint_state)
+  - [New `get_justified_state`](#new-get_justified_state)
+  - [New `get_finalized_state`](#new-get_finalized_state)
   - [New `compute_checkpoint_payload_status`](#new-compute_checkpoint_payload_status)
   - [Modified `update_checkpoints`](#modified-update_checkpoints)
   - [Modified `update_unrealized_checkpoints`](#modified-update_unrealized_checkpoints)
@@ -183,10 +185,14 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
     # [Modified in Gloas]
     anchor_checkpoint_payload_status = compute_checkpoint_payload_status(anchor_state, anchor_epoch)
     justified_checkpoint = GloasCheckpoint(
-        epoch=anchor_epoch, root=anchor_root, payload_status=anchor_checkpoint_payload_status,
+        epoch=anchor_epoch,
+        root=anchor_root,
+        payload_status=anchor_checkpoint_payload_status,
     )
     finalized_checkpoint = GloasCheckpoint(
-        epoch=anchor_epoch, root=anchor_root, payload_status=anchor_checkpoint_payload_status,
+        epoch=anchor_epoch,
+        root=anchor_root,
+        payload_status=anchor_checkpoint_payload_status,
     )
     proposer_boost_root = Root()
     return Store(
@@ -752,7 +758,8 @@ def get_payload_attestation_due_ms(epoch: Epoch) -> uint64:
 def store_target_checkpoint_state(store: Store, target: GloasCheckpoint) -> None:
     # Store target checkpoint state if not yet seen
     if target not in store.checkpoint_states:
-        # [Modified in Gloas] Select state source based on payload status
+        # [Modified in Gloas]
+        # Select state source based on payload status
         if target.payload_status == PAYLOAD_STATUS_FULL:
             base_state = copy(store.payload_states[target.root])
         else:
@@ -845,7 +852,8 @@ def compute_pulled_up_tip(store: Store, block_root: Root) -> None:
 
     store.unrealized_justifications[block_root] = state.current_justified_checkpoint
 
-    # [Modified in Gloas] Wrap checkpoints in GloasCheckpoint with computed payload statuses
+    # [Modified in Gloas]
+    # Wrap checkpoints in GloasCheckpoint with computed payload statuses
     unrealized_justified = GloasCheckpoint(
         epoch=state.current_justified_checkpoint.epoch,
         root=state.current_justified_checkpoint.root,
@@ -856,9 +864,7 @@ def compute_pulled_up_tip(store: Store, block_root: Root) -> None:
     unrealized_finalized = GloasCheckpoint(
         epoch=state.finalized_checkpoint.epoch,
         root=state.finalized_checkpoint.root,
-        payload_status=compute_checkpoint_payload_status(
-            state, state.finalized_checkpoint.epoch
-        ),
+        payload_status=compute_checkpoint_payload_status(state, state.finalized_checkpoint.epoch),
     )
 
     update_unrealized_checkpoints(store, unrealized_justified, unrealized_finalized)
@@ -917,7 +923,8 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
 
     # Check the block is valid and compute the post-state
     block_root = hash_tree_root(block)
-    # [New in Gloas] Implementation should populate checkpoint_states if this goes through any epoch transitions
+    # [New in Gloas]
+    # Implementation should populate checkpoint_states if this goes through any epoch transitions
     state_transition(state, signed_block, True)
 
     # Add new block to the store
@@ -969,9 +976,12 @@ def on_attestation(store: Store, attestation: Attestation, is_from_block: bool =
     """
     validate_on_attestation(store, attestation, is_from_block)
 
-    # [Modified in Gloas] Extract target payload status from attestation data index
+    # [Modified in Gloas]
+    # Extract target payload status from attestation data index
     target = attestation.data.target
-    target_payload_status = PAYLOAD_STATUS_FULL if (attestation.data.index >> 1) & 1 else PAYLOAD_STATUS_EMPTY
+    target_payload_status = (
+        PAYLOAD_STATUS_FULL if (attestation.data.index >> 1) & 1 else PAYLOAD_STATUS_EMPTY
+    )
     gloas_target = GloasCheckpoint(
         epoch=target.epoch,
         root=target.root,
