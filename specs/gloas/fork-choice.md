@@ -9,6 +9,7 @@
 - [Constants](#constants)
 - [Helpers](#helpers)
   - [New `ForkChoiceNode`](#new-forkchoicenode)
+  - [New `GloasCheckpoint`](#new-gloascheckpoint)
   - [Modified `LatestMessage`](#modified-latestmessage)
   - [Modified `update_latest_messages`](#modified-update_latest_messages)
   - [Modified `Store`](#modified-store)
@@ -39,8 +40,16 @@
   - [Modified `get_sync_message_due_ms`](#modified-get_sync_message_due_ms)
   - [Modified `get_contribution_due_ms`](#modified-get_contribution_due_ms)
   - [New `get_payload_attestation_due_ms`](#new-get_payload_attestation_due_ms)
+  - [Modified `store_target_checkpoint_state`](#modified-store_target_checkpoint_state)
+  - [New `get_justified_state`](#new-get_justified_state)
+  - [New `get_finalized_state`](#new-get_finalized_state)
+  - [New `compute_checkpoint_payload_status`](#new-compute_checkpoint_payload_status)
+  - [Modified `update_checkpoints`](#modified-update_checkpoints)
+  - [Modified `update_unrealized_checkpoints`](#modified-update_unrealized_checkpoints)
+  - [Modified `compute_pulled_up_tip`](#modified-compute_pulled_up_tip)
 - [Handlers](#handlers)
   - [Modified `on_block`](#modified-on_block)
+  - [Modified `on_attestation`](#modified-on_attestation)
   - [Modified `is_data_available`](#modified-is_data_available)
   - [New `on_execution_payload`](#new-on_execution_payload)
   - [New `on_payload_attestation_message`](#new-on_payload_attestation_message)
@@ -78,6 +87,15 @@ This is the modification of the fork-choice accompanying the Gloas upgrade.
 class ForkChoiceNode(Container):
     root: Root
     payload_status: PayloadStatus  # One of PAYLOAD_STATUS_* values
+```
+
+### New `GloasCheckpoint`
+
+```python
+class GloasCheckpoint(Container):
+    epoch: Epoch
+    root: Root
+    payload_status: PayloadStatus
 ```
 
 ### Modified `LatestMessage`
@@ -131,10 +149,11 @@ execution payload has not been revealed or has not been included on chain.
 class Store(object):
     time: uint64
     genesis_time: uint64
-    justified_checkpoint: Checkpoint
-    finalized_checkpoint: Checkpoint
-    unrealized_justified_checkpoint: Checkpoint
-    unrealized_finalized_checkpoint: Checkpoint
+    # [Modified in Gloas]
+    justified_checkpoint: GloasCheckpoint
+    finalized_checkpoint: GloasCheckpoint
+    unrealized_justified_checkpoint: GloasCheckpoint
+    unrealized_finalized_checkpoint: GloasCheckpoint
     proposer_boost_root: Root
     equivocating_indices: Set[ValidatorIndex]
     blocks: Dict[Root, BeaconBlock] = field(default_factory=dict)
@@ -142,7 +161,8 @@ class Store(object):
     block_timeliness: Dict[Root, Vector[boolean, NUM_BLOCK_TIMELINESS_DEADLINES]] = field(
         default_factory=dict
     )
-    checkpoint_states: Dict[Checkpoint, BeaconState] = field(default_factory=dict)
+    # [Modified in Gloas]
+    checkpoint_states: Dict[GloasCheckpoint, BeaconState] = field(default_factory=dict)
     latest_messages: Dict[ValidatorIndex, LatestMessage] = field(default_factory=dict)
     unrealized_justifications: Dict[Root, Checkpoint] = field(default_factory=dict)
     # [New in Gloas:EIP7732]
@@ -162,8 +182,18 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
     assert anchor_block.state_root == hash_tree_root(anchor_state)
     anchor_root = hash_tree_root(anchor_block)
     anchor_epoch = get_current_epoch(anchor_state)
-    justified_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
-    finalized_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
+    # [Modified in Gloas]
+    anchor_checkpoint_payload_status = compute_checkpoint_payload_status(anchor_state, anchor_epoch)
+    justified_checkpoint = GloasCheckpoint(
+        epoch=anchor_epoch,
+        root=anchor_root,
+        payload_status=anchor_checkpoint_payload_status,
+    )
+    finalized_checkpoint = GloasCheckpoint(
+        epoch=anchor_epoch,
+        root=anchor_root,
+        payload_status=anchor_checkpoint_payload_status,
+    )
     proposer_boost_root = Root()
     return Store(
         time=uint64(anchor_state.genesis_time + SLOT_DURATION_MS * anchor_state.slot // 1000),
@@ -179,7 +209,7 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         # [New in Gloas:EIP7732]
         block_timeliness={anchor_root: [True, True]},
         checkpoint_states={justified_checkpoint: copy(anchor_state)},
-        unrealized_justifications={anchor_root: justified_checkpoint},
+        unrealized_justifications={anchor_root: Checkpoint(epoch=anchor_epoch, root=anchor_root)},
         # [New in Gloas:EIP7732]
         payload_states={anchor_root: copy(anchor_state)},
         # [New in Gloas:EIP7732]
@@ -454,7 +484,7 @@ def get_weight(
     if node.payload_status == PAYLOAD_STATUS_PENDING or store.blocks[
         node.root
     ].slot + 1 != get_current_slot(store):
-        state = store.checkpoint_states[store.justified_checkpoint]
+        state = get_justified_state(store)
         attestation_score = get_attestation_score(store, node, state)
         if not should_apply_proposer_boost(store):
             # Return only attestation score if
@@ -640,7 +670,7 @@ vice-versa.
 ```python
 def is_head_weak(store: Store, head_root: Root) -> bool:
     # Calculate weight threshold for weak head
-    justified_state = store.checkpoint_states[store.justified_checkpoint]
+    justified_state = get_justified_state(store)
     reorg_threshold = calculate_committee_fraction(justified_state, REORG_HEAD_WEIGHT_THRESHOLD)
 
     # Compute head weight including equivocations
@@ -666,7 +696,7 @@ def is_head_weak(store: Store, head_root: Root) -> bool:
 
 ```python
 def is_parent_strong(store: Store, root: Root) -> bool:
-    justified_state = store.checkpoint_states[store.justified_checkpoint]
+    justified_state = get_justified_state(store)
     parent_threshold = calculate_committee_fraction(justified_state, REORG_PARENT_WEIGHT_THRESHOLD)
     block = store.blocks[root]
     parent_payload_status = get_parent_payload_status(store, block)
@@ -722,6 +752,130 @@ def get_payload_attestation_due_ms(epoch: Epoch) -> uint64:
     return get_slot_component_duration_ms(PAYLOAD_ATTESTATION_DUE_BPS)
 ```
 
+### Modified `store_target_checkpoint_state`
+
+```python
+def store_target_checkpoint_state(store: Store, target: GloasCheckpoint) -> None:
+    # Store target checkpoint state if not yet seen
+    if target not in store.checkpoint_states:
+        # [Modified in Gloas]
+        # Select state source based on payload status
+        if target.payload_status == PAYLOAD_STATUS_FULL:
+            base_state = copy(store.payload_states[target.root])
+        else:
+            base_state = copy(store.block_states[target.root])
+        if base_state.slot < compute_start_slot_at_epoch(target.epoch):
+            process_slots(base_state, compute_start_slot_at_epoch(target.epoch))
+        store.checkpoint_states[target] = base_state
+```
+
+### New `get_justified_state`
+
+```python
+def get_justified_state(store: Store) -> BeaconState:
+    return store.checkpoint_states[store.justified_checkpoint]
+```
+
+### New `get_finalized_state`
+
+```python
+def get_finalized_state(store: Store) -> BeaconState:
+    return store.checkpoint_states[store.finalized_checkpoint]
+```
+
+### New `compute_checkpoint_payload_status`
+
+```python
+def compute_checkpoint_payload_status(state: BeaconState, epoch: Epoch) -> PayloadStatus:
+    """
+    Compute the payload status for the checkpoint at the given epoch.
+    For skipped-slot checkpoints, the payload status depends on whether
+    the actual checkpoint block had an available execution payload.
+    For regular checkpoints, the status is always EMPTY.
+    """
+    if is_checkpoint_same_epoch(state, epoch):
+        return PAYLOAD_STATUS_EMPTY
+    block_slot = get_checkpoint_block_slot(state, epoch)
+    if state.execution_payload_availability[block_slot % SLOTS_PER_HISTORICAL_ROOT]:
+        return PAYLOAD_STATUS_FULL
+    else:
+        return PAYLOAD_STATUS_EMPTY
+```
+
+### Modified `update_checkpoints`
+
+```python
+def update_checkpoints(
+    store: Store,
+    justified_checkpoint: GloasCheckpoint,
+    finalized_checkpoint: GloasCheckpoint,
+) -> None:
+    """
+    Update checkpoints in store if necessary
+    """
+    # Update justified checkpoint
+    if justified_checkpoint.epoch > store.justified_checkpoint.epoch:
+        store.justified_checkpoint = justified_checkpoint
+
+    # Update finalized checkpoint
+    if finalized_checkpoint.epoch > store.finalized_checkpoint.epoch:
+        store.finalized_checkpoint = finalized_checkpoint
+```
+
+### Modified `update_unrealized_checkpoints`
+
+```python
+def update_unrealized_checkpoints(
+    store: Store,
+    unrealized_justified_checkpoint: GloasCheckpoint,
+    unrealized_finalized_checkpoint: GloasCheckpoint,
+) -> None:
+    """
+    Update unrealized checkpoints in store if necessary
+    """
+    # Update unrealized justified checkpoint
+    if unrealized_justified_checkpoint.epoch > store.unrealized_justified_checkpoint.epoch:
+        store.unrealized_justified_checkpoint = unrealized_justified_checkpoint
+
+    # Update unrealized finalized checkpoint
+    if unrealized_finalized_checkpoint.epoch > store.unrealized_finalized_checkpoint.epoch:
+        store.unrealized_finalized_checkpoint = unrealized_finalized_checkpoint
+```
+
+### Modified `compute_pulled_up_tip`
+
+```python
+def compute_pulled_up_tip(store: Store, block_root: Root) -> None:
+    state = store.block_states[block_root].copy()
+    # Pull up the post-state of the block to the next epoch boundary
+    process_justification_and_finalization(state)
+
+    store.unrealized_justifications[block_root] = state.current_justified_checkpoint
+
+    # [Modified in Gloas]
+    # Wrap checkpoints in GloasCheckpoint with computed payload statuses
+    unrealized_justified = GloasCheckpoint(
+        epoch=state.current_justified_checkpoint.epoch,
+        root=state.current_justified_checkpoint.root,
+        payload_status=compute_checkpoint_payload_status(
+            state, state.current_justified_checkpoint.epoch
+        ),
+    )
+    unrealized_finalized = GloasCheckpoint(
+        epoch=state.finalized_checkpoint.epoch,
+        root=state.finalized_checkpoint.root,
+        payload_status=compute_checkpoint_payload_status(state, state.finalized_checkpoint.epoch),
+    )
+
+    update_unrealized_checkpoints(store, unrealized_justified, unrealized_finalized)
+
+    # If the block is from a prior epoch, apply the realized values
+    block_epoch = compute_epoch_at_slot(store.blocks[block_root].slot)
+    current_epoch = get_current_store_epoch(store)
+    if block_epoch < current_epoch:
+        update_checkpoints(store, unrealized_justified, unrealized_finalized)
+```
+
 ## Handlers
 
 ### Modified `on_block`
@@ -769,6 +923,8 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
 
     # Check the block is valid and compute the post-state
     block_root = hash_tree_root(block)
+    # [New in Gloas]
+    # Implementation should populate checkpoint_states if this goes through any epoch transitions
     state_transition(state, signed_block, True)
 
     # Add new block to the store
@@ -786,10 +942,61 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
     update_proposer_boost_root(store, block_root)
 
     # Update checkpoints in store if necessary
-    update_checkpoints(store, state.current_justified_checkpoint, state.finalized_checkpoint)
+    update_checkpoints(
+        store,
+        GloasCheckpoint(
+            epoch=state.current_justified_checkpoint.epoch,
+            root=state.current_justified_checkpoint.root,
+            payload_status=compute_checkpoint_payload_status(
+                state, state.current_justified_checkpoint.epoch
+            ),
+        ),
+        GloasCheckpoint(
+            epoch=state.finalized_checkpoint.epoch,
+            root=state.finalized_checkpoint.root,
+            payload_status=compute_checkpoint_payload_status(
+                state, state.finalized_checkpoint.epoch
+            ),
+        ),
+    )
 
     # Eagerly compute unrealized justification and finality.
     compute_pulled_up_tip(store, block_root)
+```
+
+### Modified `on_attestation`
+
+```python
+def on_attestation(store: Store, attestation: Attestation, is_from_block: bool = False) -> None:
+    """
+    Run ``on_attestation`` upon receiving a new ``attestation`` from either within a block or directly on the wire.
+
+    An ``attestation`` that is asserted as invalid may be valid at a later time,
+    consider scheduling it for later processing in such case.
+    """
+    validate_on_attestation(store, attestation, is_from_block)
+
+    # [Modified in Gloas]
+    # Extract target payload status from attestation data index
+    target = attestation.data.target
+    target_payload_status = (
+        PAYLOAD_STATUS_FULL if (attestation.data.index >> 1) & 1 else PAYLOAD_STATUS_EMPTY
+    )
+    gloas_target = GloasCheckpoint(
+        epoch=target.epoch,
+        root=target.root,
+        payload_status=target_payload_status,
+    )
+
+    store_target_checkpoint_state(store, gloas_target)
+
+    # Get state at the `target` to fully validate attestation
+    target_state = store.checkpoint_states[gloas_target]
+    indexed_attestation = get_indexed_attestation(target_state, attestation)
+    assert is_valid_indexed_attestation(target_state, indexed_attestation)
+
+    # Update latest messages for attesting indices
+    update_latest_messages(store, indexed_attestation.attesting_indices, attestation)
 ```
 
 ### Modified `is_data_available`

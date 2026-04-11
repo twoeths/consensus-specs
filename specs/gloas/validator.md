@@ -12,6 +12,10 @@
   - [Lookahead](#lookahead)
 - [Beacon chain responsibilities](#beacon-chain-responsibilities)
   - [Attestation](#attestation)
+    - [Bit 0 — Head payload status](#bit-0-%E2%80%94-head-payload-status)
+    - [Bit 1 — Target checkpoint payload status](#bit-1-%E2%80%94-target-checkpoint-payload-status)
+    - [Bit 2 — Source checkpoint payload status](#bit-2-%E2%80%94-source-checkpoint-payload-status)
+    - [Combining the bits](#combining-the-bits)
   - [Sync Committee participations](#sync-committee-participations)
   - [Block and sidecar proposal](#block-and-sidecar-proposal)
     - [Broadcasting `SignedProposerPreferences`](#broadcasting-signedproposerpreferences)
@@ -93,18 +97,57 @@ All validator responsibilities remain unchanged other than the following:
 ### Attestation
 
 The attestation deadline is changed with `ATTESTATION_DUE_BPS_GLOAS`. Moreover,
-the `attestation.data.index` field is now used to signal the payload status of
-the block being attested to (`attestation.data.beacon_block_root`). With the
-alias `data = attestation.data`, the validator should set this field as follows:
+the `attestation.data.index` field is now used to encode payload status
+information using three bits. With the alias `data = attestation.data`, the
+validator should set this field as follows:
 
-- If `block.slot == current_slot` (i.e., `data.slot`), then always set
-  `data.index = 0`.
-- Otherwise, set `data.index` based on the payload status in the validator's
+#### Bit 0 — Head payload status
+
+Signals the payload status of the block being attested to
+(`data.beacon_block_root`):
+
+- If `block.slot == current_slot` (i.e., `data.slot`), then always set bit 0 to
+  `0`.
+- Otherwise, set bit 0 based on the payload status in the validator's
   fork-choice:
-  - Set `data.index = 0` to signal that the payload is not present in the
-    canonical chain (payload status is `EMPTY` in the fork-choice).
-  - Set `data.index = 1` to signal that the payload is present in the canonical
+  - Set bit 0 to `0` to signal that the payload is not present in the canonical
+    chain (payload status is `EMPTY` in the fork-choice).
+  - Set bit 0 to `1` to signal that the payload is present in the canonical
     chain (payload status is `FULL` in the fork-choice).
+
+#### Bit 1 — Target checkpoint payload status
+
+Signals the payload status of the block at the target checkpoint root:
+
+- If the target checkpoint is a **regular checkpoint** (a block exists at the
+  first slot of the target epoch), then always set bit 1 to `0`.
+- If the target checkpoint is a **skipped-slot checkpoint** (no block at the
+  first slot of the target epoch, so the checkpoint root is inherited from a
+  prior epoch), set bit 1 based on the payload status of the checkpoint root's
+  block in the validator's fork-choice:
+  - Set bit 1 to `0` if the checkpoint root block's payload status is `EMPTY`.
+  - Set bit 1 to `1` if the checkpoint root block's payload status is `FULL`.
+
+#### Bit 2 — Source checkpoint payload status
+
+Signals the payload status of the block at the source checkpoint root. The same
+logic as bit 1 applies:
+
+- If the source checkpoint is a **regular checkpoint**, then always set bit 2 to
+  `0`.
+- If the source checkpoint is a **skipped-slot checkpoint**, set bit 2 based on
+  the payload status of the checkpoint root's block in the validator's
+  fork-choice:
+  - Set bit 2 to `0` if the checkpoint root block's payload status is `EMPTY`.
+  - Set bit 2 to `1` if the checkpoint root block's payload status is `FULL`.
+
+#### Combining the bits
+
+The final value of `data.index` is computed as:
+
+```
+data.index = head_payload_bit | (target_payload_bit << 1) | (source_payload_bit << 2)
+```
 
 ### Sync Committee participations
 
