@@ -793,13 +793,13 @@ def compute_checkpoint_payload_status(state: BeaconState, epoch: Epoch) -> Paylo
     the actual checkpoint block had an available execution payload.
     For regular checkpoints, the status is always EMPTY.
     """
-    if is_skipped_slot_checkpoint(state, epoch):
-        block_slot = get_checkpoint_block_slot(state, epoch)
-        if state.execution_payload_availability[block_slot % SLOTS_PER_HISTORICAL_ROOT]:
-            return PAYLOAD_STATUS_FULL
-        else:
-            return PAYLOAD_STATUS_EMPTY
-    return PAYLOAD_STATUS_EMPTY
+    if is_checkpoint_same_epoch(state, epoch):
+        return PAYLOAD_STATUS_EMPTY
+    block_slot = get_checkpoint_block_slot(state, epoch)
+    if state.execution_payload_availability[block_slot % SLOTS_PER_HISTORICAL_ROOT]:
+        return PAYLOAD_STATUS_FULL
+    else:
+        return PAYLOAD_STATUS_EMPTY
 ```
 
 ### Modified `update_checkpoints`

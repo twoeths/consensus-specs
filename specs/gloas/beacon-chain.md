@@ -43,7 +43,7 @@
     - [New `is_active_builder`](#new-is_active_builder)
     - [New `is_builder_withdrawal_credential`](#new-is_builder_withdrawal_credential)
     - [New `is_attestation_same_slot`](#new-is_attestation_same_slot)
-    - [New `is_skipped_slot_checkpoint`](#new-is_skipped_slot_checkpoint)
+    - [New `is_checkpoint_same_epoch`](#new-is_checkpoint_same_epoch)
     - [New `get_checkpoint_block_slot`](#new-get_checkpoint_block_slot)
     - [New `is_valid_indexed_payload_attestation`](#new-is_valid_indexed_payload_attestation)
     - [New `is_parent_block_full`](#new-is_parent_block_full)
@@ -461,19 +461,20 @@ def is_attestation_same_slot(state: BeaconState, data: AttestationData) -> bool:
     return blockroot == slot_blockroot and blockroot != prev_blockroot
 ```
 
-#### New `is_skipped_slot_checkpoint`
+#### New `is_checkpoint_same_epoch`
 
 ```python
-def is_skipped_slot_checkpoint(state: BeaconState, epoch: Epoch) -> bool:
+def is_checkpoint_same_epoch(state: BeaconState, epoch: Epoch) -> bool:
     """
-    Check if the checkpoint at the given epoch is a skipped-slot checkpoint.
-    A skipped-slot checkpoint occurs when no block was proposed at the first slot of the epoch,
-    so the checkpoint root is inherited from a block in a previous epoch.
+    Check if the checkpoint block at the given epoch was proposed within the same epoch.
+    Returns False when no block was proposed at the first slot of the epoch,
+    meaning the checkpoint root is inherited from a block in a previous epoch
+    (a "skipped-slot checkpoint").
     """
     start_slot = compute_start_slot_at_epoch(epoch)
     if start_slot == 0:
-        return False
-    return get_block_root_at_slot(state, start_slot) == get_block_root_at_slot(
+        return True
+    return get_block_root_at_slot(state, start_slot) != get_block_root_at_slot(
         state, Slot(start_slot - 1)
     )
 ```
@@ -741,14 +742,14 @@ def get_attestation_participation_flag_indices(
 
     # [New in Gloas]
     # Source checkpoint payload matching
-    if is_skipped_slot_checkpoint(state, data.source.epoch):
+    if is_checkpoint_same_epoch(state, data.source.epoch):
+        source_payload_matches = source_payload_bit == 0
+    else:
         source_block_slot = get_checkpoint_block_slot(state, data.source.epoch)
         has_source_payload = state.execution_payload_availability[
             source_block_slot % SLOTS_PER_HISTORICAL_ROOT
         ]
         source_payload_matches = source_payload_bit == has_source_payload
-    else:
-        source_payload_matches = source_payload_bit == 0
 
     is_matching_source = source_checkpoint_matches and source_payload_matches
 
@@ -758,14 +759,14 @@ def get_attestation_participation_flag_indices(
 
     # [New in Gloas]
     # Target checkpoint payload matching
-    if is_skipped_slot_checkpoint(state, data.target.epoch):
+    if is_checkpoint_same_epoch(state, data.target.epoch):
+        target_payload_matches = target_payload_bit == 0
+    else:
         target_block_slot = get_checkpoint_block_slot(state, data.target.epoch)
         has_target_payload = state.execution_payload_availability[
             target_block_slot % SLOTS_PER_HISTORICAL_ROOT
         ]
         target_payload_matches = target_payload_bit == has_target_payload
-    else:
-        target_payload_matches = target_payload_bit == 0
 
     is_matching_target = is_matching_source and target_root_matches and target_payload_matches
 
