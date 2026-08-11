@@ -915,6 +915,12 @@ def update_proposer_boost_root(store: Store, head: Root, root: Root) -> None:
     # existing block, with the same dependent root as the canonical chain head.
     if is_timely and is_first_block and is_same_dependent_root:
         store.proposer_boost_root = root
+
+    # Withhold proposer boost if the boosted block's proposer has equivocated
+    if store.proposer_boost_root != Root() and is_proposer_equivocation(
+        store, store.proposer_boost_root
+    ):
+        store.proposer_boost_root = Root()
 ```
 
 ### Handlers

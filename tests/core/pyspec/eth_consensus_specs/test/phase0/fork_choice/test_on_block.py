@@ -669,14 +669,20 @@ def test_proposer_boost_is_first_block(spec, state):
         }
     )
 
-    # make a different block at the same slot
+    # make a different block at the same slot (the proposer equivocates)
     state = pre_state.copy()
     block_b = block_a.copy()
     block_b.body.graffiti = b"\x34" * 32
     signed_block_b = state_transition_and_sign_block(spec, state, block_b)
     yield from add_block(spec, store, signed_block_b, test_steps)
-    # `proposer_boost_root` is still `block_a`
-    assert store.proposer_boost_root == spec.hash_tree_root(block_a)
+    # The proposer has equivocated, so the boost is withheld from both blocks.
+    # Pre-Gloas clears `proposer_boost_root`; Gloas leaves it set but gates the boost
+    # off via `should_apply_proposer_boost`. Either way neither block gets weight.
+    if is_post_gloas(spec):
+        assert store.proposer_boost_root == spec.hash_tree_root(block_a)
+    else:
+        assert store.proposer_boost_root == spec.Root()
+    assert spec.get_weight(store, node_a) == 0
     node_b = get_fork_choice_node(spec, spec.hash_tree_root(block_b))
     assert spec.get_weight(store, node_b) == 0
     test_steps.append(
